@@ -7,93 +7,93 @@
 <a name="中文"></a>
 ## 中文
 
-从合成图片中自动提取图标，转换为透明背景 PNG。
+从合成图片中自动提取图标，转换为透明背景 PNG。**支持深色和浅色背景**。
 
 ### 特性
 
-- 自动检测图标区域（连通组件算法）
-- 智能合并相邻区域（处理带标签的图标）
-- 黑色背景自动转透明
-- 一键安装，简单调用
+- **自动检测** - 智能识别深色/浅色背景
+- **连通组件检测** - 自动识别图标区域
+- **网格模式** - 支持规则排列的图标切割
+- **边缘清理** - 处理抗锯齿边缘
+- **一键安装** - 依赖自动安装
 
 ### 安装
 
 ```bash
-# 克隆仓库
 git clone https://github.com/yueqianyun-cloud/icon-extractor-skill.git ~/.cursor/skills/icon-extractor
-
-# 一键安装依赖
 ~/.cursor/skills/icon-extractor/install.sh
 ```
 
 ### 使用
 
 ```bash
-# 提取图标
-~/.cursor/skills/icon-extractor/extract 输入图片.png ./输出目录/
+# 自动检测背景
+~/.cursor/skills/icon-extractor/extract 图片.png ./输出/
+
+# 网格模式（规则排列）
+~/.cursor/skills/icon-extractor/extract 图片.png ./输出/ -g 2x5
+
+# 指定浅色背景
+~/.cursor/skills/icon-extractor/extract 图片.png ./输出/ -b light
 ```
 
 ### 参数
 
 | 参数 | 说明 | 默认 |
 |------|------|------|
-| `-t` | 黑色检测阈值 (0-255) | 30 |
-| `-m` | 最小图标像素数 | 500 |
-| `-d` | 区域合并距离 | 20 |
-| `-p` | 裁剪边距 | 5 |
-| `-n` | 名称文件（每行一个） | 无 |
-
-### 示例
-
-```bash
-# 基础用法
-./extract icons.png ./output/
-
-# 处理小图标
-./extract icons.png ./output/ -m 200
-
-# 指定图标名称
-./extract icons.png ./output/ -n names.txt
-```
+| `-b` | 背景类型: auto/dark/light | auto |
+| `-g` | 网格模式: 行x列 | 无 |
+| `-c` | 边缘清理 (0-3) | 2 |
+| `-t` | 检测阈值 | 30 |
+| `-m` | 最小像素数 | 500 |
+| `-d` | 合并距离 | 20 |
+| `-n` | 名称文件 | 无 |
 
 ---
 
 <a name="english"></a>
 ## English
 
-Auto-extract icons from composite images with transparent background.
+Extract icons from composite images with transparent background. **Supports both dark and light backgrounds**.
 
 ### Features
 
-- Auto-detect icon regions (connected component algorithm)
-- Smart merge adjacent regions (handles icons with labels)
-- Black background to transparent
-- One-click install, simple usage
+- **Auto Detection** - Smart dark/light background detection
+- **Connected Components** - Auto icon region detection
+- **Grid Mode** - Support regular icon grid cutting
+- **Edge Cleaning** - Handle anti-aliased edges
+- **One-click Install** - Auto dependency installation
 
 ### Install
 
 ```bash
-# Clone
 git clone https://github.com/yueqianyun-cloud/icon-extractor-skill.git ~/.cursor/skills/icon-extractor
-
-# Install dependencies
 ~/.cursor/skills/icon-extractor/install.sh
 ```
 
 ### Usage
 
 ```bash
-~/.cursor/skills/icon-extractor/extract input.png ./output/
+# Auto detect background
+~/.cursor/skills/icon-extractor/extract image.png ./output/
+
+# Grid mode
+~/.cursor/skills/icon-extractor/extract image.png ./output/ -g 2x5
+
+# Light background
+~/.cursor/skills/icon-extractor/extract image.png ./output/ -b light
 ```
 
 ### Parameters
 
 | Param | Description | Default |
 |-------|-------------|---------|
-| `-t` | Black threshold (0-255) | 30 |
-| `-m` | Min icon pixels | 500 |
+| `-b` | Background: auto/dark/light | auto |
+| `-g` | Grid mode: rowsxcols | None |
+| `-c` | Edge clean (0-3) | 2 |
+| `-t` | Threshold | 30 |
+| `-m` | Min pixels | 500 |
 | `-d` | Merge distance | 20 |
-| `-p` | Crop padding | 5 |
 | `-n` | Names file | None |
 
 ---
