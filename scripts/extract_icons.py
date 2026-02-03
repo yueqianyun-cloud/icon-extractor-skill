@@ -307,38 +307,278 @@ def sort_regions_by_position(regions, height=None):
     return sorted(regions, key=get_sort_key)
 
 
+def find_icon_bbox_in_cell(img, bg_type="dark", bg_threshold=25):
+    """
+    在单元格中找到图标的实际边界（智能检测，跳过文字）
+    方法：检测每行像素数量，找到图标和文字之间的间隙
+    """
+    img_rgb = img.convert("RGB")
+    pixels = img_rgb.load()
+    width, height = img_rgb.size
+    
+    # 统计每行的非背景像素数量
+    row_counts = []
+    for y in range(height):
+        count = 0
+        for x in range(width):
+            r, g, b = pixels[x, y]
+            is_background = False
+            if bg_type == "dark":
+                if r < bg_threshold and g < bg_threshold and b < bg_threshold:
+                    is_background = True
+            else:
+                if r > 240 and g > 240 and b > 240:
+                    is_background = True
+            if not is_background:
+                count += 1
+        row_counts.append(count)
+    
+    # 找到内容区域（有像素的行）
+    content_rows = [i for i, c in enumerate(row_counts) if c > 0]
+    if not content_rows:
+        return None
+    
+    first_row = content_rows[0]
+    last_row = content_rows[-1]
+    
+    # 从底部往上找间隙（连续几行像素数量很少或为0）
+    # 图标和文字之间通常有 5-15 像素的间隙
+    gap_start = None
+    min_gap_size = 3  # 最小间隙大小
+    
+    # 只在下半部分查找间隙
+    search_start = first_row + (last_row - first_row) // 2
+    
+    for y in range(last_row, search_start, -1):
+        # 检查是否有连续的低密度行（间隙）
+        is_gap = True
+        for check_y in range(y - min_gap_size + 1, y + 1):
+            if check_y >= 0 and row_counts[check_y] > width * 0.05:  # 超过5%的像素
+                is_gap = False
+                break
+        
+        if is_gap and gap_start is None:
+            gap_start = y - min_gap_size + 1
+        elif not is_gap and gap_start is not None:
+            # 找到了间隙，用间隙顶部作为图标底部
+            icon_bottom = gap_start
+            break
+    else:
+        # 没找到明显间隙，使用85%高度作为裁剪点（保守，避免切掉图标）
+        icon_bottom = first_row + int((last_row - first_row) * 0.85)
+    
+    # 收集图标区域的像素
+    icon_pixels = []
+    for y in range(first_row, min(icon_bottom + 1, height)):
+        for x in range(width):
+            r, g, b = pixels[x, y]
+            is_background = False
+            if bg_type == "dark":
+                if r < bg_threshold and g < bg_threshold and b < bg_threshold:
+                    is_background = True
+            else:
+                if r > 240 and g > 240 and b > 240:
+                    is_background = True
+            if not is_background:
+                icon_pixels.append((x, y))
+    
+    if not icon_pixels:
+        return None
+    
+    xs = [p[0] for p in icon_pixels]
+    ys = [p[1] for p in icon_pixels]
+    
+    return (min(xs), min(ys), max(xs) + 1, max(ys) + 1)
+
+
+def detect_checkerboard_bg_colors(img, sample_step=24, max_colors=2):
+    """检测透明棋盘背景的主色（通常为两种浅灰）"""
+    img_rgb = img.convert("RGB")
+    pixels = img_rgb.load()
+    width, height = img_rgb.size
+    samples = []
+    
+    for y in range(0, height, sample_step):
+        for x in range(0, width, sample_step):
+            samples.append(pixels[x, y])
+    
+    if not samples:
+        return []
+    
+    counts = {}
+    for color in samples:
+        counts[color] = counts.get(color, 0) + 1
+    
+    # 取出现次数最多的几种颜色
+    sorted_colors = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    return [c for c, _ in sorted_colors[:max_colors]]
+
+
+def is_bg_color(color, bg_colors, tolerance=8):
+    """判断颜色是否属于背景色"""
+    r, g, b = color
+    for br, bg, bb in bg_colors:
+        if abs(r - br) < tolerance and abs(g - bg) < tolerance and abs(b - bb) < tolerance:
+            return True
+    return False
+
+
+def extract_icon_from_checkerboard(cell, bg_colors, bg_tolerance=8):
+    """从棋盘背景单元格中提取图标，去掉文字"""
+    cell_rgba = cell.convert("RGBA")
+    w, h = cell_rgba.size
+    cell_pixels = cell_rgba.load()
+    
+    # 构建非背景掩码
+    mask = [[False] * w for _ in range(h)]
+    for y in range(h):
+        for x in range(w):
+            r, g, b, _ = cell_pixels[x, y]
+            if not is_bg_color((r, g, b), bg_colors, bg_tolerance):
+                mask[y][x] = True
+    
+    visited = [[False] * w for _ in range(h)]
+    components = []
+    
+    def flood_fill(sx, sy):
+        stack = [(sx, sy)]
+        pixels = []
+        min_x = max_x = sx
+        min_y = max_y = sy
+        while stack:
+            x, y = stack.pop()
+            if x < 0 or x >= w or y < 0 or y >= h:
+                continue
+            if visited[y][x] or not mask[y][x]:
+                continue
+            visited[y][x] = True
+            pixels.append((x, y))
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    stack.append((x + dx, y + dy))
+        return pixels, (min_x, min_y, max_x, max_y)
+    
+    for y in range(h):
+        for x in range(w):
+            if mask[y][x] and not visited[y][x]:
+                pixels, bbox = flood_fill(x, y)
+                if len(pixels) > 20:
+                    components.append((pixels, bbox))
+    
+    if not components:
+        return None
+    
+    components.sort(key=lambda c: len(c[0]), reverse=True)
+    largest_pixels, largest_bbox = components[0]
+    max_area = len(largest_pixels)
+    _, _, _, largest_bottom = largest_bbox
+    
+    def bbox_distance(b1, b2):
+        x1, y1, x2, y2 = b1
+        x3, y3, x4, y4 = b2
+        dx = max(0, x3 - x2, x1 - x4)
+        dy = max(0, y3 - y2, y1 - y4)
+        return max(dx, dy)
+    
+    keep = []
+    for pixels, bbox in components:
+        area = len(pixels)
+        dist = bbox_distance(bbox, largest_bbox)
+        # 丢弃明显在图标下方的文字
+        if bbox[1] > largest_bottom + 5:
+            continue
+        if area >= max_area * 0.08 or dist <= 12:
+            keep.append((pixels, bbox))
+    
+    if not keep:
+        keep = [(largest_pixels, largest_bbox)]
+    
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    out_pixels = out.load()
+    kept_points = []
+    for pixels, _ in keep:
+        for x, y in pixels:
+            out_pixels[x, y] = cell_pixels[x, y]
+            kept_points.append((x, y))
+    
+    if not kept_points:
+        return None
+    
+    xs = [p[0] for p in kept_points]
+    ys = [p[1] for p in kept_points]
+    x1, y1, x2, y2 = min(xs), min(ys), max(xs) + 1, max(ys) + 1
+    pad = 2
+    x1 = max(0, x1 - pad)
+    y1 = max(0, y1 - pad)
+    x2 = min(w, x2 + pad)
+    y2 = min(h, y2 + pad)
+    
+    return out.crop((x1, y1, x2, y2))
+
+
 def extract_icons_grid(img, rows, cols, output_dir, names=None, 
-                       clean_edge=2, bg_type="light", skip_text=True):
-    """使用网格模式提取图标（适用于规则排列的图标）"""
+                       clean_edge=2, bg_type="light", skip_text=True, preserve_bg=False):
+    """使用网格模式提取图标（适用于规则排列的图标）
+    
+    Args:
+        preserve_bg: 如果为True，保留图标的彩色背景，只去除纯黑/纯白
+        skip_text: 如果为True，智能检测图标区域，跳过底部文字
+    """
     width, height = img.size
     cell_width = width // cols
     cell_height = height // rows
     
-    # 如果跳过文字，只取单元格上部的图标部分
-    if skip_text:
-        icon_height_ratio = 0.6  # 图标占单元格高度的比例（排除底部文字）
-    else:
-        icon_height_ratio = 1.0
+    bg_colors = []
+    if bg_type == "light" and skip_text:
+        bg_colors = detect_checkerboard_bg_colors(img)
     
     count = 0
     for row in range(rows):
         for col in range(cols):
             idx = row * cols + col
             
-            # 计算裁剪区域
+            # 裁剪单元格
             left = col * cell_width
             top = row * cell_height
             right = (col + 1) * cell_width
-            bottom = row * cell_height + int(cell_height * icon_height_ratio)
+            bottom = (row + 1) * cell_height
             
-            # 裁剪
-            icon = img.crop((left, top, right, bottom))
+            cell = img.crop((left, top, right, bottom))
+            
+            # 直接使用整个单元格，依靠背景去除来处理
+            icon = cell
             
             # 去背景
-            if bg_type == "light":
-                icon_transparent = remove_light_background(icon, 230, clean_edge)
+            if preserve_bg:
+                if bg_type == "light" and skip_text and bg_colors:
+                    # 棋盘背景：直接提取主体并去文字
+                    icon_transparent = extract_icon_from_checkerboard(icon, bg_colors)
+                else:
+                    # 保留图标彩色背景，只去除纯黑或纯白
+                    if bg_type == "dark":
+                        icon_transparent = remove_black_only(icon, 100)
+                    else:
+                        icon_transparent = remove_white_only(icon, 248)
+                    # 只保留最大连通区域，去除文字
+                    icon_transparent = keep_largest_region(icon_transparent)
             else:
-                icon_transparent = remove_black_background(icon, 30, clean_edge)
+                if bg_type == "light" and skip_text and bg_colors:
+                    icon_transparent = extract_icon_from_checkerboard(icon, bg_colors)
+                else:
+                    # 去除所有背景
+                    if bg_type == "light":
+                        icon_transparent = remove_light_background(icon, 230, clean_edge)
+                    else:
+                        icon_transparent = remove_black_background(icon, 30, clean_edge)
+            
+            if icon_transparent is None:
+                continue
             
             # 自动裁剪透明边缘
             bbox = icon_transparent.getbbox()
@@ -360,10 +600,161 @@ def extract_icons_grid(img, rows, cols, output_dir, names=None,
     return count
 
 
+def remove_white_only(img, threshold=245):
+    """只去除纯白色背景，保留彩色背景"""
+    img = img.convert("RGBA")
+    pixels = img.load()
+    width, height = img.size
+    
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            if r > threshold and g > threshold and b > threshold:
+                pixels[x, y] = (0, 0, 0, 0)
+    
+    return img
+
+
+def remove_black_only(img, threshold=90):
+    """去除黑色/深灰色背景，保留彩色内容"""
+    img = img.convert("RGBA")
+    pixels = img.load()
+    width, height = img.size
+    
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            # 计算亮度和饱和度
+            brightness = max(r, g, b)
+            max_rgb = max(r, g, b)
+            min_rgb = min(r, g, b)
+            saturation = (max_rgb - min_rgb) / max(max_rgb, 1) if max_rgb > 0 else 0
+            
+            # 去除低亮度且低饱和度的像素（黑色/深灰色背景）
+            # 但保留有颜色的深色像素（如图标阴影）
+            if brightness < threshold and saturation < 0.35:
+                pixels[x, y] = (0, 0, 0, 0)
+    
+    return img
+
+
+def keep_largest_region(img):
+    """只保留最大的连通区域（图标主体），去除分离的小区域（如文字）"""
+    img = img.convert("RGBA")
+    pixels = img.load()
+    width, height = img.size
+    
+    # 找到所有非透明像素
+    visited = [[False] * width for _ in range(height)]
+    regions = []
+    
+    def flood_fill(start_x, start_y):
+        """找到一个连通区域的所有像素"""
+        stack = [(start_x, start_y)]
+        region_pixels = []
+        
+        while stack:
+            x, y = stack.pop()
+            if x < 0 or x >= width or y < 0 or y >= height:
+                continue
+            if visited[y][x]:
+                continue
+            
+            r, g, b, a = pixels[x, y]
+            if a < 128:  # 透明像素
+                continue
+            
+            visited[y][x] = True
+            region_pixels.append((x, y))
+            
+            # 8方向连通
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0:
+                        continue
+                    stack.append((x + dx, y + dy))
+        
+        return region_pixels
+    
+    # 找到所有连通区域
+    for y in range(height):
+        for x in range(width):
+            if not visited[y][x]:
+                r, g, b, a = pixels[x, y]
+                if a >= 128:  # 非透明
+                    region = flood_fill(x, y)
+                    if region:
+                        regions.append(region)
+    
+    if not regions:
+        return img
+    
+    # 找到最大的区域
+    largest_region = max(regions, key=len)
+    largest_set = set(largest_region)
+    
+    # 只保留最大区域，其他设为透明
+    for y in range(height):
+        for x in range(width):
+            if (x, y) not in largest_set:
+                pixels[x, y] = (0, 0, 0, 0)
+    
+    # 清理边缘突出的孤立像素
+    img = clean_edge_pixels(img)
+    
+    return img
+
+
+def clean_edge_pixels(img, iterations=4):
+    """清理边缘的孤立像素和细小突出"""
+    img = img.convert("RGBA")
+    
+    for i in range(iterations):
+        pixels = img.load()
+        width, height = img.size
+        to_remove = []
+        
+        # 随着迭代增加，逐渐放宽条件
+        min_neighbors = 4 if i < 2 else 3
+        
+        for y in range(height):
+            for x in range(width):
+                r, g, b, a = pixels[x, y]
+                if a < 128:
+                    continue
+                
+                # 计算周围非透明像素数量
+                neighbors = 0
+                for dy in [-1, 0, 1]:
+                    for dx in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < width and 0 <= ny < height:
+                            _, _, _, na = pixels[nx, ny]
+                            if na >= 128:
+                                neighbors += 1
+                
+                # 如果周围只有很少的非透明像素（突出或孤立），标记删除
+                if neighbors < min_neighbors:
+                    to_remove.append((x, y))
+        
+        # 删除标记的像素
+        for x, y in to_remove:
+            pixels[x, y] = (0, 0, 0, 0)
+    
+    return img
+
+
 def extract_icons(source_path, output_dir, names=None, threshold=30, 
                   min_pixels=500, merge_distance=20, padding=5, clean_edge=2,
-                  bg_type="auto", grid=None):
-    """从图片中提取所有图标"""
+                  bg_type="auto", grid=None, preserve_bg=False, skip_text=True):
+    """从图片中提取所有图标
+    
+    Args:
+        preserve_bg: 保留图标的彩色背景（只去除纯黑/白）
+        skip_text: 智能跳过底部文字
+    """
     os.makedirs(output_dir, exist_ok=True)
     
     img = Image.open(source_path)
@@ -379,7 +770,9 @@ def extract_icons(source_path, output_dir, names=None, threshold=30,
     if grid:
         rows, cols = grid
         print(f"使用网格模式: {rows}行 x {cols}列")
-        count = extract_icons_grid(img, rows, cols, output_dir, names, clean_edge, bg_type)
+        if preserve_bg:
+            print("保留图标彩色背景模式")
+        count = extract_icons_grid(img, rows, cols, output_dir, names, clean_edge, bg_type, skip_text, preserve_bg)
         print(f"\n完成！共提取 {count} 个图标到 {output_dir}")
         return count
     
@@ -435,6 +828,10 @@ def main():
                         help="背景类型: auto=自动检测(默认), dark=深色/黑色, light=浅色/白色")
     parser.add_argument("-g", "--grid", help="网格模式: 行x列 (如 2x5 表示2行5列)")
     parser.add_argument("-n", "--names", help="图标名称文件（每行一个）")
+    parser.add_argument("--preserve-bg", action="store_true",
+                        help="保留图标的彩色背景（只去除纯黑/白背景）")
+    parser.add_argument("--no-skip-text", action="store_true",
+                        help="不跳过文字（默认会智能跳过底部文字）")
     
     args = parser.parse_args()
     
@@ -459,7 +856,9 @@ def main():
     
     extract_icons(args.source, args.output, names, args.threshold,
                   args.min_pixels, args.merge_distance, args.padding, 
-                  args.clean_edge, args.bg_type, grid)
+                  args.clean_edge, args.bg_type, grid,
+                  preserve_bg=args.preserve_bg,
+                  skip_text=not args.no_skip_text)
 
 
 if __name__ == "__main__":
