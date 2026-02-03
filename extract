@@ -1,0 +1,17 @@
+#!/bin/bash
+# Icon Extractor - 简单调用脚本
+
+SKILL_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_DIR="$SKILL_DIR/.venv"
+SCRIPT="$SKILL_DIR/scripts/extract_icons.py"
+
+# 检查是否已安装
+if [ ! -d "$VENV_DIR" ]; then
+    echo "错误: 请先运行安装脚本"
+    echo "  $SKILL_DIR/install.sh"
+    exit 1
+fi
+
+# 使用虚拟环境运行
+source "$VENV_DIR/bin/activate"
+python "$SCRIPT" "$@"
