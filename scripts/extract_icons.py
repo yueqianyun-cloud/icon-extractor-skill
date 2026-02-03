@@ -15,17 +15,76 @@ except ImportError:
     sys.exit(1)
 
 
-def remove_black_background(img, threshold=30):
-    """将黑色背景转换为透明"""
+def remove_black_background(img, threshold=30, clean_edge=0):
+    """
+    将黑色背景转换为透明
+    
+    Args:
+        img: PIL Image
+        threshold: 黑色判定阈值
+        clean_edge: 边缘清理强度 (0=关闭, 1=轻度, 2=中度, 3=强力)
+    """
     img = img.convert("RGBA")
     pixels = img.load()
     width, height = img.size
     
+    # 根据 clean_edge 调整阈值
+    edge_multiplier = 1 + clean_edge * 2  # 0->1, 1->3, 2->5, 3->7
+    effective_threshold = threshold * edge_multiplier
+    
+    # 第一遍：去除黑色背景
     for y in range(height):
         for x in range(width):
             r, g, b, a = pixels[x, y]
-            if r < threshold and g < threshold and b < threshold:
+            brightness = max(r, g, b)
+            
+            if brightness < threshold:
                 pixels[x, y] = (0, 0, 0, 0)
+            elif brightness < effective_threshold:
+                # 检查饱和度
+                max_rgb = max(r, g, b)
+                min_rgb = min(r, g, b)
+                saturation = (max_rgb - min_rgb) / max(max_rgb, 1) if max_rgb > 0 else 0
+                
+                # 低饱和度的深色像素 -> 渐变透明
+                if saturation < 0.35:
+                    ratio = (brightness - threshold) / (effective_threshold - threshold)
+                    alpha = int(ratio * 255)
+                    pixels[x, y] = (r, g, b, alpha)
+    
+    # 边缘腐蚀（仅当 clean_edge > 0）
+    if clean_edge > 0:
+        for _ in range(clean_edge):  # 迭代次数 = clean_edge
+            img2 = img.copy()
+            pixels2 = img2.load()
+            
+            for y in range(1, height - 1):
+                for x in range(1, width - 1):
+                    r, g, b, a = pixels[x, y]
+                    if a == 0:
+                        continue
+                    
+                    # 检查是否为边缘像素
+                    transparent_count = 0
+                    for dy in [-1, 0, 1]:
+                        for dx in [-1, 0, 1]:
+                            if dy == 0 and dx == 0:
+                                continue
+                            _, _, _, na = pixels[x + dx, y + dy]
+                            if na < 128:
+                                transparent_count += 1
+                    
+                    # 边缘像素处理
+                    if transparent_count > 0:
+                        brightness = max(r, g, b)
+                        if brightness < effective_threshold:
+                            # 根据相邻透明像素数量和亮度降低 alpha
+                            factor = 1 - (transparent_count / 8) * 0.7
+                            new_alpha = int(a * factor * (brightness / effective_threshold))
+                            pixels2[x, y] = (r, g, b, max(0, new_alpha))
+            
+            img = img2
+            pixels = img.load()
     
     return img
 
@@ -147,7 +206,7 @@ def sort_regions_by_position(regions, height=None):
 
 
 def extract_icons(source_path, output_dir, names=None, threshold=30, 
-                  min_pixels=500, merge_distance=20, padding=5):
+                  min_pixels=500, merge_distance=20, padding=5, clean_edge=2):
     """从图片中提取所有图标"""
     os.makedirs(output_dir, exist_ok=True)
     
@@ -173,7 +232,7 @@ def extract_icons(source_path, output_dir, names=None, threshold=30,
         crop_bottom = min(height, max_y + padding)
         
         icon = img.crop((crop_left, crop_top, crop_right, crop_bottom))
-        icon_transparent = remove_black_background(icon, threshold)
+        icon_transparent = remove_black_background(icon, threshold, clean_edge)
         
         if names and idx < len(names):
             name = names[idx].strip()
@@ -196,6 +255,8 @@ def main():
     parser.add_argument("-m", "--min-pixels", type=int, default=500, help="最小图标像素数 (默认: 500)")
     parser.add_argument("-d", "--merge-distance", type=int, default=20, help="区域合并距离 (默认: 20)")
     parser.add_argument("-p", "--padding", type=int, default=5, help="裁剪边距 (默认: 5)")
+    parser.add_argument("-c", "--clean-edge", type=int, default=2, choices=[0,1,2,3],
+                        help="边缘清理强度: 0=关闭, 1=轻度, 2=中度(默认), 3=强力")
     parser.add_argument("-n", "--names", help="图标名称文件（每行一个）")
     
     args = parser.parse_args()
@@ -210,7 +271,7 @@ def main():
             names = [line.strip() for line in f if line.strip()]
     
     extract_icons(args.source, args.output, names, args.threshold,
-                  args.min_pixels, args.merge_distance, args.padding)
+                  args.min_pixels, args.merge_distance, args.padding, args.clean_edge)
 
 
 if __name__ == "__main__":
